@@ -1,0 +1,17 @@
+name:                mpretty
+version:             0.1.0.0
+-- synopsis:            
+-- description:         
+license:             BSD3
+license-file:        LICENSE
+author:              David Darais
+maintainer:          david.darais@gmail.com
+-- copyright:           
+category:            Text
+build-type:          Simple
+cabal-version:       >=1.8
+
+library
+  exposed-modules:     Text.Pretty
+  -- other-modules:       
+  build-depends:       base ==4.6.*, mtl ==2.1.*, transformers ==0.3.*
