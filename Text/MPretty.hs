@@ -1,11 +1,11 @@
-module Text.MPrety
-  ( module Text.MPrety.IsPretty
-  , module Text.MPrety.MonadPretty
-  , module Text.MPrety.Pretty
-  , module Text.MPrety.StateSpace
+module Text.MPretty
+  ( module Text.MPretty.IsPretty
+  , module Text.MPretty.MonadPretty
+  , module Text.MPretty.Pretty
+  , module Text.MPretty.StateSpace
   ) where
 
-import Text.MPrety.IsPretty
-import Text.MPrety.MonadPretty
-import Text.MPrety.Pretty
-import Text.MPrety.StateSpace
+import Text.MPretty.IsPretty
+import Text.MPretty.MonadPretty
+import Text.MPretty.Pretty
+import Text.MPretty.StateSpace

@@ -2,6 +2,7 @@
 
 module Text.MPretty.StateSpace where
 
+import Util.PartialOrder
 import Data.List
 import System.Console.ANSI
 import Data.Monoid
@@ -32,10 +33,22 @@ data Layout = Flat | Break
 data Failure = Fail | NoFail
   deriving (Eq, Ord, Show, Enum)
 
-data Style = PreStyle | PostStyle | IndentStyle
+data Style = PreAlignStyle | PreSnugStyle | PostStyle | IndentStyle
   deriving (Eq, Ord, Show, Enum)
 data Buffering = Buffer | NoBuffer
   deriving (Eq, Ord, Show, Enum)
+
+data Direction = LeftD | RightD | NoD
+  deriving (Eq, Show, Enum)
+  
+data Precedence = Precedence Direction Int Int
+  deriving (Eq, Show)
+instance PartialOrder Precedence where
+  lte (Precedence d1 i1 j1) (Precedence d2 i2 j2) =
+    d1 == d2 
+    && (i1 < i2 
+        || (i1 == i2 
+            && j1 <= j2))
 
 data Options = Options
   { _style :: Style
@@ -45,10 +58,13 @@ data Options = Options
 makeLens ''Options
 
 defaultPreOptions :: Options
-defaultPreOptions = Options PreStyle Buffer 2
+defaultPreOptions = Options PreAlignStyle Buffer 2
 
 defaultPostOptions :: Options
 defaultPostOptions = Options PostStyle NoBuffer 2
+
+defaultIndentStyle :: Options
+defaultIndentStyle = Options IndentStyle NoBuffer 2
 
 data Palette = Palette
   { _punctuationColor :: ConsoleState
@@ -73,7 +89,7 @@ data PrettyEnv = PrettyEnv
   , _layout :: Layout
   , _failure :: Failure
   -- , _depth :: Int
-  , _precedence :: ((Int,Int), (Int,Int))
+  , _precedence :: (Precedence,Precedence)
   -- style
   , _options :: Options
   -- truncation
@@ -83,7 +99,7 @@ data PrettyEnv = PrettyEnv
   , _palette :: Palette
   , _consoleState :: ConsoleState
   , _doConsole :: Bool
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Show)
 makeLens ''PrettyEnv
 
 instance HasLens PrettyEnv PrettyEnv where

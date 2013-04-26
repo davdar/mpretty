@@ -4,6 +4,8 @@ module Text.MPretty.MonadPretty where
 
 import Prelude hiding (id, (.))
 
+import qualified Data.List as L
+import Util.PartialOrder
 import Data.Char
 import Control.Category
 import Control.Monad
@@ -35,20 +37,23 @@ type (MonadPretty env out state m) =
 ----- "Primitives" -----
 
 text :: (MonadPretty env out state m) => out -> m ()
-text s = do
-  tell s
-  column . view %= (pLength s +)
-  ribbon . view %= (countNonSpace s +)
-  m <- look $ failure . view
-  when (m == Fail) $ do
-    w <- look $ width . view
-    rr <- look $ ribbonRatio. view
-    k <- access $ column . view
-    r <- access $ ribbon . view
-    when (k > w) mzero
-    when (fromIntegral r > fromIntegral w * rr) mzero
-  where
-    countNonSpace = pFoldl (\i c -> i + if isSpace c then 0 else 1) 0
+text s = 
+  let sL = pLength s
+      nsL = countNonSpace s
+  in do
+    tell s
+    column . view %= (+) sL
+    ribbon . view %= (+) nsL
+    m <- look $ failure . view
+    when (m == Fail) $ do
+      w <- look $ width . view
+      rr <- look $ ribbonRatio . view
+      k <- access $ column . view
+      r <- access $ ribbon . view
+      when (k > w) mzero
+      when (fromIntegral r > fromIntegral w * rr) mzero
+    where
+      countNonSpace = pFoldl (\i c -> i + if isSpace c then 0 else 1) 0
 
 space :: (MonadPretty env out state m) => Int -> m ()
 space = text . pString . flip replicate ' '
@@ -60,24 +65,18 @@ tryFlat dFlat dBreak = do
     Flat -> dFlat
     Break -> dBreak
 
-newline :: (MonadPretty env out state m) => m ()
-newline = do
-  tell $ pString "\n"
-  column . view ~= 0
-  return ()
-
 hardLine :: (MonadPretty env out state m) => m ()
 hardLine = do
   i <- look $ nesting . view
-  newline
+  tell $ pString "\n"
+  column . view ~= 0
+  ribbon . view ~= 0
   space i
 
-tryFlat :: (MonadPretty env out state m) => m a -> m a
-tryFlat = local (modL (failure . view) $ const Fail) . local (modL (layout . view) $ const Flat)
-
--- softLine :: (MonadPretty env out state m) => m () -> m () -> m () -> m ()
--- softLine fs bsb bsa =
---   tryFlat fs $ bsb >> hardLine >> bsa
+flatFail :: (MonadPretty env out state m) => m a -> m a
+flatFail = 
+  local (modL (failure . view) $ const Fail) 
+  . local (modL (layout . view) $ const Flat)
 
 nest :: (MonadPretty env out state m) => Int -> m a -> m a
 nest i = local $ modL (nesting . view) (i +)
@@ -88,7 +87,7 @@ group aM = do
   case l of
     Flat -> aM
     Break -> msum
-      [ tryFlat aM
+      [ flatFail aM
       , aM
       ]
 
@@ -103,11 +102,15 @@ hang i = align . nest i
 
 ----- Helpers -----
 
-withPrecedence :: (MonadPretty env out state m) => (Int,Int) -> (Int,Int) -> m a -> m a
-withPrecedence lp rp = local $ modL view $ setL precedence (lp,rp)
+closedPrecedence :: Int -> (Precedence,Precedence)
+closedPrecedence i = (Precedence NoD i 0,Precedence NoD i 0)
+
+withPrecedence :: (MonadPretty env out state m) 
+               => (Precedence,Precedence) -> m a -> m a
+withPrecedence = local . modL view . setL precedence
 
 preStyle :: (MonadPretty env out state m) => m a -> m a
-preStyle = local $ modL (options . view) $ setL style PreStyle
+preStyle = local $ modL (options . view) $ setL style PreAlignStyle
 
 postStyle :: (MonadPretty env out state m) => m a -> m a
 postStyle = local $ modL (options . view) $ setL style PostStyle
@@ -138,52 +141,81 @@ getBuff = do
 
 dropIndent :: (MonadPretty env out state m) => m () -> m ()
 dropIndent d = do
-  i <- look $ indent . options . view
-  nest i $ do
-    softLine mempty mempty mempty
-    d
+  i <- look $ indentation . options . view
+  tryFlat (return ()) $ do
+    hardLine
+    space i
+  align d
 
 encloseSepPre :: (MonadPretty env out state m)
-              => out -> out -> out -> [m ()] -> m ()
-encloseSepPre lbrac rbrac sep ds = do
-  buff <- getBuff
-  let f = foldr (.) id
-        [ mapFirst $ \ d -> do
-            punctuation $ text lbrac
-            tryFlat (text buff) $ do 
-              space $ sepL - lbracL
+              => out -> out -> out -> Bool -> [m ()] -> m ()
+encloseSepPre lbrac rbrac sep snug ds = 
+  let lbracL = pLength lbrac
+      sepL = pLength sep
+  in do
+    buff <- getBuff
+    let f = foldr (.) id
+          [ mapFirst $ \ d -> do
+              punctuation $ text lbrac
+              tryFlat (text buff) $ do 
+                space $ sepL - lbracL
+                text buff
+              d
+          , mapRest $ \ d -> do
+              tryFlat (text buff) $ do
+                hardLine
+                space $ lbracL - sepL
+              punctuation $ text sep
               text buff
-            d
-        , mapRest $ \ d -> do
-            tryFlat (text buff) $ do
-              hardLine
-              space $ lbracL - sepL
-            punctuation $ text sep
-            text buff
-            d
-        , mapLast $ \ d -> do
-            d
-            tryFlat (text buff) hardLine
-            punctuation $ text rbrac
-        ]
-  group . sequence_ . f $ map (withPrecedence (0,0) (0,0) . align) ds
+              d
+          , mapLast $ \ d -> do
+              d
+              if snug then text buff else tryFlat (text buff) hardLine
+              punctuation $ text rbrac
+          ]
+    group . sequence_ . f $ map (withPrecedence (closedPrecedence 0)  . align) ds
 
 encloseSepPost :: (MonadPretty env out state m)
                => out -> out -> out -> [m ()] -> m ()
-encloseSepPost lbrac rbrac sep ds = do
-  b <- look $ buffering . options . view
-  let buff = case b of
-        Buffer -> pString " "
-        NoBuffer -> mempty
-      f = foldr (.) id $ case s of
+encloseSepPost lbrac rbrac sep ds =
+  let lbracL = pLength lbrac
+  in do
+    buff <- getBuff
+    let f = foldr (.) id $
+          [ mapFirst $ \ d -> do
+              punctuation $ text lbrac
+              text buff
+              d
+          , mapRest $ \ d -> do
+              tryFlat (return ()) $ do
+                hardLine
+                space lbracL
+              text buff
+              d
+          , mapLeading $ \ d -> do
+              d
+              text buff
+              punctuation $ text sep
+          , mapLast $ \ d -> do
+              d
+              text buff
+              punctuation $ text rbrac
+          ]
+    group . sequence_ . f $ map (withPrecedence (closedPrecedence 0) . align) ds
+
+encloseSepIndent :: (MonadPretty env out state m)
+                 => out -> out -> out -> [m ()] -> m ()
+encloseSepIndent lbrac rbrac sep ds = do
+  buff <- getBuff
+  i <- look $ indentation . options . view
+  let f = foldr (.) id $
         [ mapFirst $ \ d -> do
             punctuation $ text lbrac
-            text buff
             d
-        , mapRest $ \ d -> do
-            softLine buff mempty mempty
-            text $ pString $ flip replicate ' ' $ lbracL
-            text buff
+        , map $ \ d -> do
+            tryFlat (text buff) $ do
+              hardLine
+              space i
             d
         , mapLeading $ \ d -> do
             d
@@ -191,34 +223,10 @@ encloseSepPost lbrac rbrac sep ds = do
             punctuation $ text sep
         , mapLast $ \ d -> do
             d
-            text buff
+            tryFlat (text buff) hardLine
             punctuation $ text rbrac
         ]
-  group . sequence_ . f $ map (withPrecedence (0,0) (0,0) . align) ds
-
-encloseSepIndent :: (MonadPretty env out state m)
-                 => out -> out -> out -> [m ()] -> m ()
-encloseSepIndent lbrac rbrac sep ds = do
-  b <- look $ buffering . options . view
-  let buff = case b of
-        Buffer -> pString " "
-        NoBuffer -> mempty
-      f = foldr (.) id $ case s of
-          [ mapFirst $ \ d -> do
-              punctuation $ text lbrac
-              d
-          , map $ \ d -> do
-              softLine buff mempty $ pString $ replicate i ' '
-              d
-          , mapLeading $ \ d -> do
-              d
-              text buff
-              punctuation $ text sep
-          , mapLast $ \ d -> do
-              d
-              softLine buff mempty mempty
-          ]
-  group . sequence_ . f $ map (withPrecedence (0,0) (0,0) . align) ds
+  group . sequence_ . f $ map (withPrecedence (closedPrecedence 0) . align) ds
 
 encloseSep :: (MonadPretty env out state m) 
            => out -> out -> out -> [m ()] -> m ()
@@ -226,47 +234,63 @@ encloseSep lbrac rbrac _ [] = punctuation $ text lbrac >> text rbrac
 encloseSep lbrac rbrac sep ds = do
   s <- look $ style . options . view
   case s of
-    PreStyle -> encloseSepPre lbrac rbrac sep ds
+    PreAlignStyle -> encloseSepPre lbrac rbrac sep False ds
+    PreSnugStyle -> encloseSepPre lbrac rbrac sep True ds
     PostStyle -> encloseSepPost lbrac rbrac sep ds
     IndentStyle -> encloseSepIndent lbrac rbrac sep ds
 
-encloseSepPreDrop :: (MonadPretty env out state m)
-                  => out -> out -> out -> [m ()] -> m ()
-encloseSepPreDrop lbrac rbrac sep = lineDrop . encloseSepPreDrop lbrac rbrac sep
+encloseSepDropIndent :: (MonadPretty env out state m)
+                     => out -> out -> out -> [m ()] -> m ()
+encloseSepDropIndent lbrac rbrac _ [] = punctuation $ text lbrac >> text rbrac
+encloseSepDropIndent lbrac rbrac sep ds = do
+  s <- look $ style . options . view
+  case s of
+    PreAlignStyle -> dropIndent $ encloseSepPre lbrac rbrac sep False ds
+    PreSnugStyle -> dropIndent $ encloseSepPre lbrac rbrac sep True ds
+    PostStyle -> dropIndent $ encloseSepPost lbrac rbrac sep ds
+    IndentStyle -> encloseSepIndent lbrac rbrac sep ds
 
-encloseSepPostDrop :: (MonadPretty env out state m)
-                   => out -> out -> out -> [m ()] -> m ()
-encloseSepPostDrop lbrac rbrac sep = lineDrop . lbrac rbrac sep
+infixOp :: (MonadPretty env out state m) 
+        => Direction -> Int -> m () -> m () -> m () -> m ()
+infixOp d n infixD leftD rightD = do
+  s <- look $ style . options . view
+  buff <- getBuff
+  (pl,pr) <- look $ precedence . view
+  let pl' = Precedence d n $ case d of
+        LeftD -> 0
+        RightD -> 1
+        NoD -> 0
+      pr' = Precedence d n $ case d of
+        LeftD -> 1
+        RightD -> 0
+        NoD -> 0
+      enclose = if pl |<=| pl' && pr |<=| pr'
+        then id
+        else parenthesize
+  enclose $ do
+    withPrecedence (pl,pl') leftD
+    let preSep = do
+          tryFlat (text buff) hardLine
+          infixD
+          text buff
+        postSep = do
+          text buff
+          infixD
+          tryFlat (text buff) hardLine
+    case s of
+      PreAlignStyle -> preSep
+      PreSnugStyle -> preSep
+      PostStyle -> postSep
+      IndentStyle -> postSep
+    withPrecedence (pr',pr) rightD
 
-encloseSepIndentDrop :: (MonadPretty env out state m)
-encloseSepIndentDrop lbrac rbrac sep = do
-  b <- look $ buffering . options . view
-  let buff = case b of
-        Buffer -> pString " "
-        NoBuffer -> mempty
-      f = foldr (.) id $ case s of
-          [ mapFirst $ \ d -> do
-              punctuation $ text lbrac
-              d
-          , map $ \ d -> do
-              softLine buff mempty $ pString $ replicate i ' '
-              d
-          , mapLeading $ \ d -> do
-              d
-              text buff
-              punctuation $ text sep
-          , mapLast $ \ d -> do
-              d
-              softLine buff mempty mempty
-          ]
-  group . sequence_ . f $ map (withPrecedence (0,0) (0,0) . align) ds
-  
-encloseSepDrop :: (MonadPretty env out state m)
-               => out -> out -> out -> [m ()] -> m ()
-encloseSepDrop = undefined
+hsep :: (MonadPretty env out state m) => [m ()] -> m ()
+hsep ds = do
+  buff <- getBuff
+  foldr (>>) (return ()) $ L.intersperse (text buff) ds
 
-infixOp :: (MonadPretty env out state m) => Int -> out -> m () -> m () -> m ()
-infixOp = undefined
+parenthesize :: (MonadPretty env out state m) => m () -> m ()
+parenthesize d = text (pString "(") >> group (align d) >> text (pString ")")
 
 ----- ANSI Console helpers -----
 
@@ -321,15 +345,18 @@ literal aM = do
 
 ----- Testing -----
 
-displayVariants :: (MonadPretty env out state m) => Int -> m () -> m ()
-displayVariants i aM = do
+styleVariants :: (MonadPretty env out state m) => m () -> m ()
+styleVariants aM = do
+  i <- look $ indentation . options . view
   let configs =
-        [ Options PreStyle    Buffer   i
-        , Options PreStyle    NoBuffer i
-        , Options PostStyle   Buffer   i
-        , Options PostStyle   NoBuffer i
-        , Options IndentStyle Buffer   i
-        , Options IndentStyle NoBuffer i
+        [ Options PreAlignStyle Buffer   i
+        , Options PreAlignStyle NoBuffer i
+        , Options PreSnugStyle  Buffer   i
+        , Options PreSnugStyle  NoBuffer i
+        , Options PostStyle     Buffer   i
+        , Options PostStyle     NoBuffer i
+        , Options IndentStyle   Buffer   i
+        , Options IndentStyle   NoBuffer i
         ]
   forM_ configs $ \ o -> do
     hardLine
