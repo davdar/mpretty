@@ -2,7 +2,6 @@
 
 module Text.MPretty.StateSpace where
 
-import Util.PartialOrder
 import Data.List
 import System.Console.ANSI
 import Data.Monoid
@@ -41,14 +40,8 @@ data Buffering = Buffer | NoBuffer
 data Direction = LeftD | RightD | NoD
   deriving (Eq, Show, Enum)
   
-data Precedence = Precedence Direction Int Int
-  deriving (Eq, Show)
-instance PartialOrder Precedence where
-  lte (Precedence d1 i1 j1) (Precedence d2 i2 j2) =
-    d1 == d2 
-    && (i1 < i2 
-        || (i1 == i2 
-            && j1 <= j2))
+data Precedence = Precedence Int Bool
+  deriving (Eq, Ord, Show)
 
 data Options = Options
   { _style :: Style
@@ -70,14 +63,18 @@ data Palette = Palette
   { _punctuationColor :: ConsoleState
   , _literalColor :: ConsoleState
   , _binderColor :: ConsoleState
+  , _keywordColor :: ConsoleState
   } deriving (Eq, Ord, Show)
 makeLens ''Palette
 
 defaultPalette :: Palette
 defaultPalette = Palette
-  { _punctuationColor = setConsoleColor Yellow Dull
-  , _literalColor = setConsoleColor Red Dull
-  , _binderColor = setConsoleColor Cyan Dull
+  { _punctuationColor = setConsoleColor Dull Yellow
+  , _literalColor = setConsoleColor Dull Red
+  , _binderColor = setConsoleColor Dull Cyan
+  , _keywordColor = 
+      setConsole underliningM SingleUnderline
+      `mappend` setConsole intensityM BoldIntensity
   }
 
 data PrettyEnv = PrettyEnv
@@ -102,6 +99,20 @@ data PrettyEnv = PrettyEnv
   } deriving (Eq, Show)
 makeLens ''PrettyEnv
 
+defaultPrettyEnv :: PrettyEnv
+defaultPrettyEnv = PrettyEnv
+  { _width = 80
+  , _ribbonRatio = 0.8
+  , _nesting = 0
+  , _layout = Break
+  , _failure = NoFail
+  , _precedence = (Precedence 0 False,Precedence 0 False)
+  , _options = defaultPreOptions
+  , _palette = defaultPalette
+  , _consoleState = emptyConsoleState
+  , _doConsole = True
+  }
+
 instance HasLens PrettyEnv PrettyEnv where
   view = iso id id
 
@@ -110,6 +121,12 @@ data PrettyState = PrettyState
   , _ribbon :: Int
   } deriving (Eq, Ord, Show)
 makeLens ''PrettyState
+
+defaultPrettyState :: PrettyState
+defaultPrettyState = PrettyState
+  { _column = 0 
+  , _ribbon = 0
+  }
 
 instance HasLens PrettyState PrettyState where
   view = iso id id

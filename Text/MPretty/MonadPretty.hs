@@ -5,7 +5,6 @@ module Text.MPretty.MonadPretty where
 import Prelude hiding (id, (.))
 
 import qualified Data.List as L
-import Util.PartialOrder
 import Data.Char
 import Control.Category
 import Control.Monad
@@ -55,8 +54,11 @@ text s =
     where
       countNonSpace = pFoldl (\i c -> i + if isSpace c then 0 else 1) 0
 
+string :: (MonadPretty env out state m) => String -> m ()
+string = text . pString
+
 space :: (MonadPretty env out state m) => Int -> m ()
-space = text . pString . flip replicate ' '
+space = string . flip replicate ' '
 
 tryFlat :: (MonadPretty env out state m) => m a -> m a -> m a
 tryFlat dFlat dBreak = do
@@ -103,14 +105,17 @@ hang i = align . nest i
 ----- Helpers -----
 
 closedPrecedence :: Int -> (Precedence,Precedence)
-closedPrecedence i = (Precedence NoD i 0,Precedence NoD i 0)
+closedPrecedence i = (Precedence i False,Precedence i False)
 
 withPrecedence :: (MonadPretty env out state m) 
                => (Precedence,Precedence) -> m a -> m a
 withPrecedence = local . modL view . setL precedence
 
-preStyle :: (MonadPretty env out state m) => m a -> m a
-preStyle = local $ modL (options . view) $ setL style PreAlignStyle
+preAlignStyle :: (MonadPretty env out state m) => m a -> m a
+preAlignStyle = local $ modL (options . view) $ setL style PreAlignStyle
+
+preSnugStyle :: (MonadPretty env out state m) => m a -> m a
+preSnugStyle = local $ modL (options . view) $ setL style PreSnugStyle
 
 postStyle :: (MonadPretty env out state m) => m a -> m a
 postStyle = local $ modL (options . view) $ setL style PostStyle
@@ -129,6 +134,9 @@ noConsole = local $ setL (doConsole . view) False
 
 layoutWidth :: (MonadPretty env out state m) => Int -> m a -> m a
 layoutWidth = local . setL (width . view)
+
+indentWidth :: (MonadPretty env out state m) => Int -> m a -> m a
+indentWidth = local . setL (indentation . options . view)
 
 ----- Style helpers -----
 
@@ -251,24 +259,28 @@ encloseSepDropIndent lbrac rbrac sep ds = do
     IndentStyle -> encloseSepIndent lbrac rbrac sep ds
 
 infixOp :: (MonadPretty env out state m) 
-        => Direction -> Int -> m () -> m () -> m () -> m ()
-infixOp d n infixD leftD rightD = do
+        => Direction -> Int -> Buffering -> m () -> m () -> m () -> m ()
+infixOp d n b infixD leftD rightD = do
   s <- look $ style . options . view
-  buff <- getBuff
+  let buff = case b of
+        Buffer -> pString " "
+        NoBuffer -> mempty
   (pl,pr) <- look $ precedence . view
-  let pl' = Precedence d n $ case d of
-        LeftD -> 0
-        RightD -> 1
-        NoD -> 0
-      pr' = Precedence d n $ case d of
-        LeftD -> 1
-        RightD -> 0
-        NoD -> 0
-      enclose = if pl |<=| pl' && pr |<=| pr'
+  let q = Precedence n False
+      ql = Precedence n $ case d of
+        LeftD -> False
+        RightD -> True
+        NoD -> True
+      qr = Precedence n $ case d of
+        LeftD -> True
+        RightD -> False
+        NoD -> True
+      enclose = if pl <= q && pr <= q
         then id
-        else parenthesize
+        else group . parenthesize
   enclose $ do
-    withPrecedence (pl,pl') leftD
+    (pl',pr') <- look $ precedence . view
+    withPrecedence (pl',ql) leftD
     let preSep = do
           tryFlat (text buff) hardLine
           infixD
@@ -282,15 +294,36 @@ infixOp d n infixD leftD rightD = do
       PreSnugStyle -> preSep
       PostStyle -> postSep
       IndentStyle -> postSep
-    withPrecedence (pr',pr) rightD
+    withPrecedence (qr,pr') rightD
 
 hsep :: (MonadPretty env out state m) => [m ()] -> m ()
 hsep ds = do
   buff <- getBuff
   foldr (>>) (return ()) $ L.intersperse (text buff) ds
 
+vsep :: (MonadPretty env out state m) => [m ()] -> m ()
+vsep ds = do
+  buff <- getBuff
+  foldr (>>) (return ()) $ L.intersperse (tryFlat (text buff) hardLine) ds
+
 parenthesize :: (MonadPretty env out state m) => m () -> m ()
-parenthesize d = text (pString "(") >> group (align d) >> text (pString ")")
+parenthesize d = do
+  punctuation $ string "("
+  withPrecedence (closedPrecedence 0) $ align d
+  punctuation $ string ")"
+
+sexpListCons :: (MonadPretty env out state m) => [m ()] -> Maybe (m ()) -> m ()
+sexpListCons ds dM = group $ parenthesize $ do
+  buffer $ vsep $ ds
+  case dM of
+    Nothing -> return ()
+    Just d -> do
+      tryFlat (space 1) hardLine
+      punctuation $ string ". "
+      d
+
+sexpList :: (MonadPretty env out state m) => [m ()] -> m ()
+sexpList = flip sexpListCons Nothing
 
 ----- ANSI Console helpers -----
 
@@ -330,8 +363,8 @@ swapFgBg = localConsole . setL swapFgBgM . Just
 gcolor :: (MonadPretty env out state m) => ConsoleLayer -> ColorIntensity -> Color -> m a -> m a
 gcolor cl ci c = localConsole $ setL gcolorM $ Just (cl,ci,c)
 
-color :: (MonadPretty env out state m) => Color -> m a -> m a
-color = gcolor Foreground Vivid
+color :: (MonadPretty env out state m) => ColorIntensity -> Color -> m a -> m a
+color = gcolor Foreground
 
 punctuation :: (MonadPretty env out state m) => m a -> m a
 punctuation aM = do
@@ -342,6 +375,17 @@ literal :: (MonadPretty env out state m) => m a -> m a
 literal aM = do
   lc <- look $ literalColor . palette . view
   localConsole (mappend lc) aM
+
+binder :: (MonadPretty env out state m) => m a -> m a
+binder aM = do
+  bc <- look $ binderColor . palette . view
+  localConsole (mappend bc) aM
+
+keyword :: (MonadPretty env out state m) => m a -> m a
+keyword aM = do
+  kc <- look $ keywordColor . palette . view
+  localConsole (mappend kc) aM
+
 
 ----- Testing -----
 
@@ -360,9 +404,18 @@ styleVariants aM = do
         ]
   forM_ configs $ \ o -> do
     hardLine
-    text $ pString "##### "
-    text $ pString $ show o
-    text $ pString " #####"
+    string "##### "
+    string $ show o
+    string " #####"
     hardLine
     local (setL (options . view) o) aM
     hardLine
+
+----- TopLevel ----
+
+showPretty :: (MonadPretty env out state m) => m a -> m a
+showPretty = 
+  layoutWidth 0 
+  . local (setL (layout . view) Flat) 
+  . noBuffer 
+  . noConsole

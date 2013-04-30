@@ -22,28 +22,8 @@ newtype Pretty a = Pretty
 runPretty :: Pretty a -> PrettyEnv -> PrettyState -> [(a,PrettyState,Text)]
 runPretty aM r s = runRWST (unPretty aM) r s
 
-startingPrettyEnv :: PrettyEnv
-startingPrettyEnv = PrettyEnv
-  { _width = 80
-  , _ribbonRatio = 0.8
-  , _nesting = 0
-  , _layout = Break
-  , _failure = NoFail
-  , _precedence = closedPrecedence 0
-  , _options = defaultPreOptions
-  , _palette = defaultPalette
-  , _consoleState = emptyConsoleState
-  , _doConsole = True
-  }
-
-startingPrettyState :: PrettyState
-startingPrettyState = PrettyState
-  { _column = 0 
-  , _ribbon = 0
-  }
-
 execPretty :: Pretty () -> Text
 execPretty aM =
-  let aM' = emitConsoleStateCodes >> aM
-      ((),_,t) = head $ runPretty aM' startingPrettyEnv startingPrettyState
+  let aM' = emitConsoleStateCodes >> group aM
+      ((),_,t) = head $ runPretty aM' defaultPrettyEnv defaultPrettyState
   in t

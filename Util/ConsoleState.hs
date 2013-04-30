@@ -35,8 +35,8 @@ instance Monoid ConsoleState where
 setConsole :: Lens ConsoleState (Maybe a) -> a -> ConsoleState
 setConsole l x = setL l (Just x) emptyConsoleState
 
-setConsoleColor :: Color -> ColorIntensity -> ConsoleState
-setConsoleColor c ci = setConsole gcolorM (Foreground,ci,c)
+setConsoleColor :: ColorIntensity -> Color -> ConsoleState
+setConsoleColor ci c = setConsole gcolorM (Foreground,ci,c)
 
 setConsoleStateCodes :: ConsoleState -> String
 setConsoleStateCodes cs =
